@@ -1,0 +1,24 @@
+--- a/bitmap.c
++++ b/bitmap.c
+@@ -44,1 +44,2 @@
++typedef int PILRC_LONG;                           /* signed 32-bit BMP field */
+ typedef int bool;                                /* f */
+@@ -69,14 +70,14 @@
+ typedef struct BITMAPINFOHEADER
+ {
+   PILRC_ULONG biSize;
+-  long biWidth;
+-  long biHeight;
++  PILRC_LONG biWidth;
++  PILRC_LONG biHeight;
+   PILRC_USHORT biPlanes;
+   PILRC_USHORT biBitCount;
+   PILRC_ULONG biCompression;
+   PILRC_ULONG biSizeImage;
+-  long biXPelsPerMeter;
+-  long biYPelsPerMeter;
++  PILRC_LONG biXPelsPerMeter;
++  PILRC_LONG biYPelsPerMeter;
+   PILRC_ULONG biClrUsed;
+   PILRC_ULONG biClrImportant;
+ } BITMAPINFOHEADER;

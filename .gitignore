@@ -1,0 +1,16 @@
+﻿**/bin/
+**/obj/
+tmp/
+publish/
+logs/
+build/
+*.log
+*.csv
+*.tmp
+users.dat
+!tests/**/Fixtures/users.dat
+/成果物/
+/Backup/
+/Install/
+*.user
+.vs/

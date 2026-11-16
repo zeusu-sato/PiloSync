@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../PiloSync.Core/PiloSync.Core.csproj"/></ItemGroup>
+  <ItemGroup><InternalsVisibleTo Include="PiloSync.UsbProbe"/><InternalsVisibleTo Include="PiloSync.Core.Tests"/></ItemGroup>
+</Project>
