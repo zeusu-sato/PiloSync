@@ -4,6 +4,7 @@ tmp/
 publish/
 logs/
 build/
+artifacts/
 *.log
 *.csv
 *.tmp
