@@ -10,11 +10,13 @@ public class SourceEncodingTests
     public void SourceFilesDoNotContainMojibake()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory != null && !Directory.Exists(Path.Combine(directory.FullName, "PalmSync", "src")))
+        while (directory != null && !Directory.Exists(Path.Combine(directory.FullName, "PalmSync", "src"))
+            && !(File.Exists(Path.Combine(directory.FullName, "PiloSync.sln")) && Directory.Exists(Path.Combine(directory.FullName, "src"))))
             directory = directory.Parent;
 
         Assert.NotNull(directory);
-        var source = Path.Combine(directory.FullName, "PalmSync", "src");
+        var source = Directory.Exists(Path.Combine(directory.FullName, "PalmSync", "src"))
+            ? Path.Combine(directory.FullName, "PalmSync", "src") : Path.Combine(directory.FullName, "src");
         var utf8 = new UTF8Encoding(false, true);
         var tokens = new Regex("//[^\\r\\n]*|/\\*[\\s\\S]*?\\*/|'(?:\\\\.|[^'\\\\])*'|(?<literal>\\$?@\"(?:\"\"|[^\"])*\"|@\\$\"(?:\"\"|[^\"])*\"|\\$?\"(?:\\\\.|[^\"\\\\])*\")");
         var errors = new List<string>();

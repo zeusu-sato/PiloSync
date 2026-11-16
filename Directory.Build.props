@@ -1,0 +1,17 @@
+﻿<Project>
+  <PropertyGroup>
+    <_PiloSyncTagPattern>^v(20\d{2})\.((?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[a-z])$</_PiloSyncTagPattern>
+    <PiloSyncVersion Condition="'$(PiloSyncTag)' != '' and $([System.Text.RegularExpressions.Regex]::IsMatch('$(PiloSyncTag)', '$(_PiloSyncTagPattern)'))">$([System.Text.RegularExpressions.Regex]::Match('$(PiloSyncTag)', '$(_PiloSyncTagPattern)').Groups[2].Value)</PiloSyncVersion>
+    <PiloSyncVersion Condition="'$(PiloSyncVersion)' == ''">開発版</PiloSyncVersion>
+    <InformationalVersion>$(PiloSyncVersion)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(PiloSyncTag)' != '' and ('$(MSBuildProjectName)' == 'PiloSync.Cli' or '$(MSBuildProjectName)' == 'PiloSync.Launcher')">
+    <AssemblyMetadata Include="PiloSyncTag" Value="$(PiloSyncTag)" />
+  </ItemGroup>
+  <Target Name="ValidatePiloSyncTag" BeforeTargets="PrepareForBuild" Condition="'$(PiloSyncTag)' != '' and !$([System.Text.RegularExpressions.Regex]::IsMatch('$(PiloSyncTag)', '$(_PiloSyncTagPattern)'))">
+    <Error Text="Invalid PiloSyncTag: $(PiloSyncTag)" />
+  </Target>
+</Project>

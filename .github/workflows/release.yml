@@ -1,0 +1,95 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-2025
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check SDK and tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (dotnet --list-sdks | Where-Object { $_ -match '^8\.0\.' })) { throw 'The .NET 8 SDK is required' }
+          # The authoritative pattern is in Directory.Build.props.
+          if ($env:RELEASE_TAG -cnotmatch '^v(20\d{2})\.((?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[a-z])$') { throw 'Invalid release tag' }
+      - name: Restore, build and test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $properties = @("-p:PiloSyncTag=$env:RELEASE_TAG", '-p:ContinuousIntegrationBuild=true', '-p:DebugType=none')
+          dotnet restore PiloSync.sln @properties
+          if ($LASTEXITCODE -ne 0) { throw 'Restore failed' }
+          dotnet build PiloSync.sln -c Release --no-restore @properties
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+          dotnet test PiloSync.sln -c Release --no-build --no-restore @properties
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+      - name: Publish and package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $properties = @("-p:PiloSyncTag=$env:RELEASE_TAG", '-p:ContinuousIntegrationBuild=true', '-p:DebugType=none')
+          dotnet publish src/PiloSync.Cli/PiloSync.Cli.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true @properties -o artifacts/cli
+          if ($LASTEXITCODE -ne 0) { throw 'CLI publish failed' }
+          dotnet publish src/PiloSync.Launcher/PiloSync.Launcher.csproj -c Release @properties -o artifacts/launcher
+          if ($LASTEXITCODE -ne 0) { throw 'Launcher publish failed' }
+          New-Item -ItemType Directory -Force artifacts/package | Out-Null
+          Copy-Item artifacts/cli/pilosync-cli.exe, artifacts/launcher/PiloSync.exe, LICENSE artifacts/package/
+          $zip = "PiloSync-$env:RELEASE_TAG-win-x64.zip"
+          Compress-Archive -Path artifacts/package/* -DestinationPath "artifacts/$zip"
+          $hash = (Get-FileHash "artifacts/$zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $PWD 'artifacts/SHA256SUMS.txt'), "$hash  $zip`n", [Text.UTF8Encoding]::new($false))
+      - name: Inspect package
+        shell: pwsh
+        env:
+          LEAK_WORDS: ${{ secrets.LEAK_WORDS }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = "artifacts/PiloSync-$env:RELEASE_TAG-win-x64.zip"
+          Expand-Archive $zip artifacts/unpacked
+          $names = @(Get-ChildItem artifacts/unpacked -Recurse -File | ForEach-Object { $_.Name } | Sort-Object)
+          if (($names -join ',') -cne 'LICENSE,PiloSync.exe,pilosync-cli.exe') { throw 'Unexpected package contents' }
+          if (Get-ChildItem artifacts/unpacked -Directory) { throw 'Unexpected directory in package' }
+          if (Get-ChildItem artifacts/unpacked -Recurse -Filter '*.pdb') { throw 'PDB in package' }
+          # Search specific paths: the Microsoft runtime contains D:\a\_work\1\s\src\coreclr\vm\threads.cpp.
+          $secretWords = @($env:LEAK_WORDS -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          if ($secretWords.Count -eq 0) { throw 'LEAK_WORDS is not set' }
+          $needles = @(('C:\' + 'Users\'), ('gh' + 'p_'), ('github_' + 'pat_'), ('one' + 'drive'), 'runneradmin', ('ze' + 'usu'), "D:\a\$env:REPOSITORY_NAME")
+          $paths = @(@{ Value = $env:GITHUB_WORKSPACE; Label = 'GITHUB_WORKSPACE' }, @{ Value = $env:USERPROFILE; Label = 'USERPROFILE' })
+          $files = @('artifacts/package/PiloSync.exe', 'artifacts/package/pilosync-cli.exe', 'artifacts/unpacked/PiloSync.exe', 'artifacts/unpacked/pilosync-cli.exe')
+          foreach ($file in $files) {
+            $bytes = [IO.File]::ReadAllBytes((Join-Path $PWD $file))
+            $texts = @([Text.Encoding]::GetEncoding(28591).GetString($bytes), [Text.Encoding]::Unicode.GetString($bytes, 0, $bytes.Length - ($bytes.Length % 2)), [Text.Encoding]::Unicode.GetString($bytes, 1, $bytes.Length - 1 - (($bytes.Length - 1) % 2)))
+            foreach ($needle in $needles) {
+              if ([string]::IsNullOrWhiteSpace($needle)) { continue }
+              foreach ($value in $texts) {
+                # The public repository identifier is expected in update URLs.
+                if ($needle -eq ('ze' + 'usu')) { $value = $value.Replace('zeusu-sato/PiloSync/', '').Replace('zeusu-sato/PiloSync.git', '') }
+                if ($value.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "Forbidden string $needle in $file" }
+              }
+            }
+            foreach ($path in $paths) {
+              if ([string]::IsNullOrWhiteSpace($path.Value)) { continue }
+              foreach ($value in $texts) { if ($value.IndexOf($path.Value, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "Forbidden string $($path.Label) in $file" } }
+            }
+            for ($i = 0; $i -lt $secretWords.Count; $i++) {
+              foreach ($value in $texts) { if ($value.IndexOf($secretWords[$i], [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "Forbidden string LEAK_WORDS $($i + 1) in $file" } }
+            }
+          }
+      - name: Create release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:RELEASE_TAG.Split('.')[1]
+          gh release create $env:RELEASE_TAG "artifacts/PiloSync-$env:RELEASE_TAG-win-x64.zip" artifacts/SHA256SUMS.txt --title "PiloSync $version" --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }

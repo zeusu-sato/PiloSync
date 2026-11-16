@@ -3,6 +3,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 using PiloSync.Protocol;
+using PiloSync.Cli.Update;
+using Microsoft.Win32;
 
 namespace PiloSync.Cli;
 
@@ -54,6 +56,7 @@ public static partial class TrayHost
     public static string LogDirectory => Path.Combine(PiloSync.Core.AppFolder.Current, "Logs");
     private static string TodayLog => Path.Combine(LogDirectory, $"PiloSync-{DateTime.Now:yyyyMMdd}.log");
     [DllImport("kernel32.dll")] private static extern bool FreeConsole();
+    [DllImport("user32.dll")] private static extern IntPtr GetActiveWindow();
     public static bool IsRunning() { if (!Mutex.TryOpenExisting(MutexName, out var mutex)) return false; mutex.Dispose(); return true; }
     public static void Notify(string title, string message)
     {
@@ -124,6 +127,9 @@ public static partial class TrayHost
         if (!created) { try { using var signal = EventWaitHandle.OpenExisting(@"Local\PiloSync.Tray.Activate"); signal.Set(); } catch (WaitHandleCannotBeOpenedException) { } return 1; }
         using var activate = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\PiloSync.Tray.Activate");
         int result = 0;
+        using var releaseRequest = new ManualResetEvent(false);
+        using var released = new ManualResetEvent(false);
+        using var finished = new ManualResetEvent(false);
         var thread = new Thread(() =>
         {
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -152,6 +158,60 @@ public static partial class TrayHost
             timer.Tick += (_, _) => { frame = (frame + 1) % TrayIcons.FrameCount; trayIcon.Icon = frames[frame]; };
             refresh = Refresh;
             CancellationTokenSource? stop = null; Task worker = Task.CompletedTask;
+            using var pipeStop = new CancellationTokenSource();
+            Task pipeWorker = Task.CompletedTask;
+            CancellationTokenSource? updateStop = null;
+            Task updateWorker = Task.CompletedTask;
+            string? currentTag = UpdateFetcher.CurrentTag;
+            using var settingsKey = Registry.CurrentUser.CreateSubKey(@"Software\PiloSync");
+            var settings = new UpdateSettings(settingsKey);
+            bool updateEnabled = settings.Enabled;
+            async Task<bool> TryInstall(StagedUpdate staged, CancellationToken token)
+            {
+                var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                try
+                {
+                    control.BeginInvoke((Action)(async () =>
+                    {
+                        try
+                        {
+                            if (token.IsCancellationRequested || !UpdateGate.CanInstall(Status.Snapshot().Count, paused, stop is not null, Application.OpenForms.Count + (GetActiveWindow() != IntPtr.Zero ? 1 : 0), menu.Visible)) { completion.TrySetResult(false); return; }
+                            menu.Enabled = false;
+                            paused = true; Refresh();
+                            await Stop();
+                            if (token.IsCancellationRequested || Status.Snapshot().Count != 0 || Application.OpenForms.Count != 0 || GetActiveWindow() != IntPtr.Zero) { Start(); menu.Enabled = true; completion.TrySetResult(false); return; }
+                            try
+                            {
+                                // 待ち受け停止中は HotSync が始まらない。
+                                UpdateInstaller.Install(AppContext.BaseDirectory, staged.Folder);
+                            }
+                            catch (Exception ex) { Log($"更新の入れ替え: 失敗 {ex.Message}"); Start(); menu.Enabled = true; completion.TrySetResult(false); return; }
+                            pipeStop.Cancel();
+                            try { await pipeWorker; } catch (Exception ex) { Log(ex.ToString()); }
+                            trayIcon.Visible = false;
+                            releaseRequest.Set();
+                            await Task.Run(() => released.WaitOne());
+                            try { await Task.Run(() => new UpdateHandover().Run(AppContext.BaseDirectory, staged, currentTag!, Log)); }
+                            finally { completion.TrySetResult(true); Application.ExitThread(); }
+                        }
+                        catch (Exception ex) { Log(ex.ToString()); completion.TrySetException(ex); }
+                    }));
+                }
+                catch (InvalidOperationException) { completion.TrySetResult(false); }
+                return await completion.Task;
+            }
+            void StartUpdates()
+            {
+                if (currentTag is null || !updateEnabled) return;
+                updateStop = new CancellationTokenSource();
+                var token = updateStop.Token;
+                updateWorker = Task.Run(async () =>
+                {
+                    try { await new UpdateScheduler(new UpdateFetcher()).RunAsync(currentTag, () => updateEnabled, () => settings.FailedTag, TryInstall, Log, token); }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+                    catch (Exception ex) { Log(ex.ToString()); }
+                });
+            }
             bool Handover()
             {
                 try
@@ -217,12 +277,24 @@ public static partial class TrayHost
                 }
                 catch (Exception ex) { Log(ex.ToString()); Notify("登録を外せません", ex.Message); }
             };
-            using var pipeStop = new CancellationTokenSource();
-            var pipeWorker = Task.Run(() => InstallPipe.Listen(paths => control.BeginInvoke((Action)(() => SelectInstall(paths))), Log, pipeStop.Token));
+            pipeWorker = Task.Run(() => InstallPipe.Listen(paths => control.BeginInvoke((Action)(() => SelectInstall(paths))), Log, pipeStop.Token));
             if (installFiles.Length > 0) control.BeginInvoke((Action)(() => SelectInstall(installFiles)));
             menu.Items.Add("ログを開く", null, (_, _) => { Log("ログを開きます"); Open(TodayLog); });
             menu.Items.Add("保存先のフォルダを開く", null, (_, _) => { var path = new PalmRegistry().DataPath; if (!string.IsNullOrWhiteSpace(path)) Open(path); else Notify("保存先", "Core\\Path が設定されていません。"); });
             var startup = new ToolStripMenuItem("サインイン時に自動で起動する"); menu.Items.Add(startup);
+            if (currentTag is not null)
+            {
+                var autoUpdate = new ToolStripMenuItem("自動アップデート") { CheckOnClick = true, Checked = updateEnabled, ToolTipText = "GitHub の Releases から新しい版を入れます" };
+                menu.ShowItemToolTips = true;
+                menu.Items.Add(autoUpdate);
+                autoUpdate.CheckedChanged += (_, _) =>
+                {
+                    updateEnabled = autoUpdate.Checked;
+                    settings.SetEnabled(updateEnabled);
+                    Log($"自動アップデート: {(updateEnabled ? "オン" : "オフ")}");
+                    if (updateEnabled) StartUpdates(); else updateStop?.Cancel();
+                };
+            }
             var environment = new StartupEnvironment();
             void RefreshStartup()
             {
@@ -252,14 +324,31 @@ public static partial class TrayHost
             try
             {
                 for (int i = 0; i < TrayIcons.FrameCount; i++) frames.Add(TrayIcons.Create(size, i, false));
-                Start(); pause.Text = paused ? "再開" : "一時停止";
+                Start();
+                if (!paused && stop is not null) { try { UpdateHandover.SignalReady(); } catch (Exception ex) { Log(ex.ToString()); } }
+                try
+                {
+                    if (UpdateHandover.ReadUpdatedFrom() is not null)
+                    {
+                        UpdateHandover.ClearUpdatedFrom();
+                        string message = $"PiloSync {Version} に更新しました";
+                        Log(message); Notify("PiloSync", message);
+                    }
+                }
+                catch (Exception ex) { Log(ex.ToString()); }
+                StartUpdates();
+                pause.Text = paused ? "再開" : "一時停止";
                 foreach (var process in Process.GetProcessesByName("HotSync")) { process.Dispose(); Notify("PiloSync", "純正 HotSync Manager が起動中です。ポートを取り合うので終了してください"); break; }
                 Application.Run();
             }
             catch (Exception ex) { Crash(ex); result = 1; }
-            finally { pipeStop.Cancel(); try { pipeWorker.GetAwaiter().GetResult(); } catch (Exception ex) { Crash(ex); } installForm?.Close(); activation.Unregister(null); timer.Stop(); stop?.Cancel(); try { worker.GetAwaiter().GetResult(); } catch (Exception ex) { Crash(ex); } stop?.Dispose(); refresh = null; icon = null; dispatcher = null; trayIcon.Visible = false; trayIcon.Icon = null; foreach (var item in frames) item.Dispose(); }
+            finally { updateStop?.Cancel(); pipeStop.Cancel(); try { pipeWorker.GetAwaiter().GetResult(); } catch (Exception ex) { Crash(ex); } installForm?.Close(); activation.Unregister(null); timer.Stop(); stop?.Cancel(); try { worker.GetAwaiter().GetResult(); } catch (Exception ex) { Crash(ex); } stop?.Dispose(); refresh = null; icon = null; dispatcher = null; trayIcon.Visible = false; trayIcon.Icon = null; foreach (var item in frames) item.Dispose(); finished.Set(); }
         });
-        thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
-        mutex.ReleaseMutex(); return result;
+        thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        bool mutexReleased = WaitHandle.WaitAny([releaseRequest, finished]) == 0;
+        if (mutexReleased) { mutex.ReleaseMutex(); released.Set(); }
+        thread.Join();
+        if (!mutexReleased) mutex.ReleaseMutex();
+        return result;
     }
 }
