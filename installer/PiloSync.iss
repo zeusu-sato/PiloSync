@@ -42,8 +42,9 @@ SetupIconFile=..\src\PiloSync.Cli\PiloSync.ico
 UninstallDisplayIcon={app}\PiloSync.exe
 UninstallDisplayName=PiloSync
 CreateUninstallRegKey=not IsTestMode
-Compression=lzma2/max
-SolidCompression=yes
+; Stored uncompressed so the release check scans the real bytes of the packaged files:
+; compressed data can contain a checked word by chance.
+Compression=none
 WizardStyle=modern
 CloseApplications=no
 RestartApplications=no
