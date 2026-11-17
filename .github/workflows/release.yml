@@ -81,6 +81,23 @@ jobs:
           $files = @('artifacts/package/PiloSync.exe', 'artifacts/package/pilosync-cli.exe', 'artifacts/unpacked/PiloSync.exe', 'artifacts/unpacked/pilosync-cli.exe', "artifacts/$setupName")
           foreach ($file in $files) {
             $bytes = [IO.File]::ReadAllBytes((Join-Path $PWD $file))
+            $imageEnd = -1
+            try {
+              if ($bytes.Length -ge 2 -and $bytes[0] -eq 0x4d -and $bytes[1] -eq 0x5a) {
+                $peOff = [BitConverter]::ToInt32($bytes, 0x3c)
+                $sections = [BitConverter]::ToUInt16($bytes, $peOff + 6)
+                $optionalSize = [BitConverter]::ToUInt16($bytes, $peOff + 20)
+                $table = $peOff + 24 + $optionalSize
+                $end = 0L
+                for ($j = 0; $j -lt $sections; $j++) {
+                  $section = $table + 40 * $j
+                  $rawSize = [BitConverter]::ToUInt32($bytes, $section + 16)
+                  $rawPointer = [BitConverter]::ToUInt32($bytes, $section + 20)
+                  $end = [Math]::Max($end, [long]$rawPointer + $rawSize)
+                }
+                $imageEnd = $end
+              }
+            } catch { $imageEnd = -1 }
             $texts = @([Text.Encoding]::GetEncoding(28591).GetString($bytes), [Text.Encoding]::Unicode.GetString($bytes, 0, $bytes.Length - ($bytes.Length % 2)), [Text.Encoding]::Unicode.GetString($bytes, 1, $bytes.Length - 1 - (($bytes.Length - 1) % 2)))
             foreach ($needle in $needles) {
               if ([string]::IsNullOrWhiteSpace($needle)) { continue }
@@ -95,7 +112,15 @@ jobs:
               foreach ($value in $texts) { if ($value.IndexOf($path.Value, [StringComparison]::OrdinalIgnoreCase) -ge 0) { Write-Host ("::error::" + "Forbidden string $($path.Label) in $file"); throw "Forbidden string $($path.Label) in $file" } }
             }
             for ($i = 0; $i -lt $secretWords.Count; $i++) {
-              foreach ($value in $texts) { if ($value.IndexOf($secretWords[$i], [StringComparison]::OrdinalIgnoreCase) -ge 0) { Write-Host ("::error::" + "Forbidden string LEAK_WORDS $($i + 1) in $file"); throw "Forbidden string LEAK_WORDS $($i + 1) in $file" } }
+              for ($k = 0; $k -lt $texts.Count; $k++) {
+                $at = $texts[$k].IndexOf($secretWords[$i], [StringComparison]::OrdinalIgnoreCase)
+                if ($at -ge 0) {
+                  $offset = if ($k -eq 0) { $at } elseif ($k -eq 1) { 2 * $at } else { 2 * $at + 1 }
+                  $region = if ($imageEnd -ge 0 -and $offset -ge $imageEnd) { 'overlay' } else { 'image' }
+                  $message = "Forbidden string LEAK_WORDS $($i + 1) in $file at byte $offset, $region, image end $imageEnd, size $($bytes.Length), decoding $k"
+                  Write-Host ("::error::" + $message); throw $message
+                }
+              }
             }
           }
           # Install and uninstall the setup on the disposable runner profile.
