@@ -93,7 +93,7 @@ static int Run(string[] args)
     try
     {
         if (args.FirstOrDefault() == "tidy-backup") return PiloSync.Cli.TidyBackupCommand.Run(args, new PiloSync.Cli.PalmRegistry(), Console.Out);
-        if (args.FirstOrDefault() == "schedule") return PiloSync.Cli.ScheduleCommand.Run(args, PiloSync.Core.HotSyncSchedule.DefaultPath, Console.Out);
+        if (args.FirstOrDefault() == "schedule") return PiloSync.Cli.ScheduleCommand.Run(args, PiloSync.Core.HotSyncSchedule.DefaultPath, Console.Out, () => { var path = new PiloSync.Cli.PalmRegistry().DataPath; return string.IsNullOrWhiteSpace(path) || !File.Exists(Path.Combine(path, "users.dat")) ? null : new PiloSync.Core.AccountStore(path).Data.Users.Select(u => u.Name).ToArray(); });
         if (!PiloSync.Cli.TrayHost.IsRunning())
         {
             var handover = PiloSync.Cli.RenameHandover.Run(new PiloSync.Cli.HandoverEnvironment());

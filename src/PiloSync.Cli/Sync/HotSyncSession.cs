@@ -11,9 +11,10 @@ public static class HotSyncSession
 {
     public const string UnregisteredDeviceMessage = "未登録の端末です。pilosync-cli.exe listen --assign <名前> で既存のアカウントに結びつけてください";
     private static readonly ConcurrentDictionary<string, object> AccountLocks = new(StringComparer.OrdinalIgnoreCase);
-    public static bool Run(DlpClient dlp, IPalmRegistry registry, Action<string> log, Action abort, string? assign = null, Action<string>? userKnown = null, Action<bool, string>? completed = null, Action<SyncProgress>? progress = null, RestoreRequest? restore = null, string? connection = null, IReadOnlyList<int>? schedule = null)
+    public static bool Run(DlpClient dlp, IPalmRegistry registry, Action<string> log, Action abort, string? assign = null, Action<string>? userKnown = null, Action<bool, string>? completed = null, Action<SyncProgress>? progress = null, RestoreRequest? restore = null, string? connection = null, string? schedulePath = null)
     {
-        schedule ??= HotSyncSchedule.Load(HotSyncSchedule.DefaultPath);
+        ScheduleSettings? settings = null;
+        schedulePath ??= HotSyncSchedule.DefaultPath;
         bool succeeded = false, restoreWarning = false;
         string failure = "セッションを完了できませんでした";
         var timer = Stopwatch.StartNew();
@@ -55,6 +56,8 @@ public static class HotSyncSession
             if (string.IsNullOrWhiteSpace(path)) { Stop("失敗：Pilot Desktop の Core\\Path が設定されていません。"); return false; }
             if (!File.Exists(Path.Combine(path, "users.dat"))) { Stop($"失敗：users.dat がありません：{path}"); return false; }
             var store = new AccountStore(path);
+            settings = HotSyncSchedule.LoadSettings(schedulePath);
+            if (settings.Legacy) settings = HotSyncSchedule.Update(schedulePath, current => current.MigrateLegacy(store.Data.Users.Select(u => u.Name)));
             AccountResolution resolution;
             if (restore is not null)
             {
@@ -125,7 +128,10 @@ public static class HotSyncSession
                 string installFolder = store.GetInstallFolder(account);
                 var installed = DeviceInstaller.Run(dlp, installFolder, Log, report);
                 PalmRegistryOperations.CompleteInstall(registry, account.Id, installFolder);
-                ScheduleSync.Apply(dlp, schedule, Log);
+                {
+                    var resolved = ScheduleSync.Apply(dlp, settings!, settings!.StateFor(account.Name), Log);
+                    if (resolved is not null) HotSyncSchedule.Update(schedulePath, current => current.StateFor(account.Name) != ScheduleDeviceState.Inherit ? current : current with { Devices = current.Devices.Select(d => d.Name == account.Name ? d with { State = resolved.Value } : d).ToArray() });
+                }
                 var dbs = dlp.ReadDBList();
                 var backup = DeviceBackup.Run(dlp, dbs, store.GetBackupFolder(account), Log, report);
                 Log($"インストール：成功 {installed.Succeeded.Count}{(installed.Skipped!.Count > 0 ? $"、見送り {installed.Skipped.Count}" : "")}、失敗 {installed.Failed.Count} / バックアップ：保存 {backup.SavedCount}、変化なし {backup.SkippedCount}{(backup.InUse.Count > 0 ? $"、使用中で読めず {backup.InUse.Count}" : "")}、失敗 {backup.FailedCount}");

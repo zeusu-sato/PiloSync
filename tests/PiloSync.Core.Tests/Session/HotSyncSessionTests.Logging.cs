@@ -15,7 +15,7 @@ public sealed partial class HotSyncSessionTests
         for (int i = 0; i < skipped; i++)
             using (var output = File.Create(Path.Combine(install, $"{i}.pdb"))) new PalmDbFile { Name = $"Install{i}" }.Write(output);
         var device = new Device { StorageLow = true }; var lines = new List<string>(); bool? completed = null; string? reason = null;
-        Assert.True(HotSyncSession.Run(new(device), registry, lines.Add, () => Assert.Fail("abort"), completed: (ok, message) => { completed = ok; reason = message; }, schedule: []));
+        Assert.True(HotSyncSession.Run(new(device), registry, lines.Add, () => Assert.Fail("abort"), completed: (ok, message) => { completed = ok; reason = message; }, schedulePath: Path.Combine(root, "schedule.json")));
         string expected = $"インストール：成功 0{(skipped > 0 ? $"、見送り {skipped}" : "")}、失敗 0";
         Assert.Contains(lines, line => line.Contains(expected));
         Assert.Contains(File.ReadAllLines(Path.Combine(root, "User", "HotSync.log")), line => line.Contains(expected));
@@ -34,7 +34,7 @@ public sealed partial class HotSyncSessionTests
         using (var output = File.Create(Path.Combine(store.GetBackupFolder(store.Data.Users.Single(a => a.Name == "Target")), "restore.pdb"))) new PalmDbFile { Name = "Restored" }.Write(output);
         var lines = new List<string>();
         Assert.True(HotSyncSession.Run(new(new Device(registered) { StorageUnavailable = true }), registry, lines.Add, () => Assert.Fail("abort"),
-            assign: "User", restore: restore ? new("Target") : null, connection: connection, schedule: []));
+            assign: "User", restore: restore ? new("Target") : null, connection: connection, schedulePath: Path.Combine(root, "schedule.json")));
         string first = connection is null ? "" : $"[{connection}] ";
         string known = connection is null ? "" : registered ? "[User] " : $"[{connection}] ";
         Assert.StartsWith(first + "[", lines[0]); Assert.EndsWith("HotSync 開始", lines[0]);
@@ -48,7 +48,7 @@ public sealed partial class HotSyncSessionTests
     public void EarlyFailureKeepsConnectionLogPrefix(byte command)
     {
         var lines = new List<string>();
-        Assert.False(HotSyncSession.Run(new(new Device { FailCommand = command }), Registry(), lines.Add, () => { }, connection: "COM3", schedule: []));
+        Assert.False(HotSyncSession.Run(new(new Device { FailCommand = command }), Registry(), lines.Add, () => { }, connection: "COM3", schedulePath: Path.Combine(root, "schedule.json")));
         Assert.All(lines, line => Assert.StartsWith("[COM3] [", line));
         Assert.Contains(lines, line => line.Contains("失敗：通信切断"));
     }
@@ -63,7 +63,7 @@ public sealed partial class HotSyncSessionTests
         var status = new TrayStatus(); using var session = status.Begin("COM3"); var texts = new List<string>();
         Assert.True(HotSyncSession.Run(new(new Device { TidyFailure = "ok" }), registry, lines.Add, () => Assert.Fail("abort"),
             userKnown: session.Rename, completed: (ok, _) => success = ok,
-            progress: p => { progress.Add(p); session.Report(p); texts.Add(status.Snapshot().Text); if (throws) throw new InvalidOperationException("progress"); }, schedule: []));
+            progress: p => { progress.Add(p); session.Report(p); texts.Add(status.Snapshot().Text); if (throws) throw new InvalidOperationException("progress"); }, schedulePath: Path.Combine(root, "schedule.json")));
         Assert.Equal(new[] { new SyncProgress(SyncPhase.Install, 1, 1, "good.pdb"), new(SyncPhase.Backup, 1, 1, "Data") }, progress);
         Assert.True(success); Assert.Contains(lines, l => l.Contains("終了（正常）"));
         Assert.Equal(new[] { "PiloSync：User インストール中 1/1 good.pdb", "PiloSync：User バックアップ中 1/1 Data" }, texts);
@@ -73,7 +73,7 @@ public sealed partial class HotSyncSessionTests
     {
         var registry = Registry(); string? user = null; bool? success = null; string? reason = null;
         Assert.True(HotSyncSession.Run(new(new Device()), registry, _ => { }, () => Assert.Fail("abort"),
-            userKnown: name => user = name, completed: (ok, message) => { success = ok; reason = message; }, schedule: []));
+            userKnown: name => user = name, completed: (ok, message) => { success = ok; reason = message; }, schedulePath: Path.Combine(root, "schedule.json")));
         Assert.Equal("User", user); Assert.True(success); Assert.Equal("", reason);
     }
     [Fact]
@@ -81,7 +81,7 @@ public sealed partial class HotSyncSessionTests
     {
         bool? success = null; string? reason = null;
         Assert.False(HotSyncSession.Run(new(new Device { FailCommand = 0x12 }), Registry(), _ => { }, () => { },
-            completed: (ok, message) => { success = ok; reason = message; }, schedule: []));
+            completed: (ok, message) => { success = ok; reason = message; }, schedulePath: Path.Combine(root, "schedule.json")));
         Assert.False(success); Assert.Equal("通信切断", reason);
     }
     [Theory]
@@ -94,7 +94,7 @@ public sealed partial class HotSyncSessionTests
         using (var output = File.Create(Path.Combine(install, "good.pdb"))) new PalmDbFile { Name = "Data", Type = "DATA", Creator = "TEST", Attributes = 0x20 }.Write(output);
         File.WriteAllBytes(Path.Combine(install, "bad.pdb"), [1, 2]);
         var device = new Device { ResetError = resetError, StorageAvailable = true }; var lines = new List<string>(); bool aborted = false;
-        Assert.True(HotSyncSession.Run(new(device), registry, lines.Add, () => aborted = true, schedule: []));
+        Assert.True(HotSyncSession.Run(new(device), registry, lines.Add, () => aborted = true, schedulePath: Path.Combine(root, "schedule.json")));
         Assert.False(aborted); Assert.True(File.Exists(Path.Combine(root, "User", "Backup", "Data.pdb")));
         string logPath = Path.Combine(root, "User", "HotSync.log");
         Assert.Equal(new byte[] { 239, 187, 191 }, File.ReadAllBytes(logPath)[..3]);

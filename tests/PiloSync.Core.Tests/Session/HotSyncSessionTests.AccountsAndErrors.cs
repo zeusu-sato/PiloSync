@@ -14,7 +14,7 @@ public sealed partial class HotSyncSessionTests
         InitialSetup.Run(registry, root, lines.Add);
         string target = Path.Combine(AppFolder.Resolve(root), "Palm OS Desktop");
         Assert.Equal(target, registry.DataPath);
-        Assert.True(HotSyncSession.Run(new(new Device { TidyFailure = "ok" }), registry, lines.Add, () => Assert.Fail("abort"), schedule: []));
+        Assert.True(HotSyncSession.Run(new(new Device { TidyFailure = "ok" }), registry, lines.Add, () => Assert.Fail("abort"), schedulePath: Path.Combine(root, "schedule.json")));
         var store = new AccountStore(target); var account = Assert.Single(store.Data.Users);
         Assert.Equal("User", account.Name);
         string folder = Path.Combine(target, account.Folder);
@@ -28,7 +28,7 @@ public sealed partial class HotSyncSessionTests
         var registry = Registry(); byte[] before = File.ReadAllBytes(Path.Combine(root, "users.dat"));
         var device = new Device(false); var lines = new List<string>();
         string? reason = null;
-        Assert.False(HotSyncSession.Run(new(device), registry, lines.Add, () => Assert.Fail("abort"), completed: (ok, message) => { Assert.False(ok); reason = message; }, schedule: []));
+        Assert.False(HotSyncSession.Run(new(device), registry, lines.Add, () => Assert.Fail("abort"), completed: (ok, message) => { Assert.False(ok); reason = message; }, schedulePath: Path.Combine(root, "schedule.json")));
         Assert.Equal(HotSyncSession.UnregisteredDeviceMessage, reason);
         Assert.Contains(lines, l => l.EndsWith(HotSyncSession.UnregisteredDeviceMessage));
         Assert.DoesNotContain(device.Requests, r => r[0] is 0x11 or 0x2e);
@@ -41,7 +41,7 @@ public sealed partial class HotSyncSessionTests
     public void CommunicationFailureIsCaughtAndAborted(byte command)
     {
         var registry = Registry(); var device = new Device { FailCommand = command }; var lines = new List<string>(); bool aborted = false;
-        Assert.False(HotSyncSession.Run(new(device), registry, lines.Add, () => aborted = true, schedule: []));
+        Assert.False(HotSyncSession.Run(new(device), registry, lines.Add, () => aborted = true, schedulePath: Path.Combine(root, "schedule.json")));
         Assert.True(aborted); Assert.Contains(lines, l => l.Contains("失敗：通信切断"));
         Assert.Single(lines, l => l.Contains("DLP 要求"));
         Assert.Contains("終了（失敗）", lines[^1]);
@@ -51,7 +51,7 @@ public sealed partial class HotSyncSessionTests
     public void AssignWritesExistingAccountBeforeOpeningConduit()
     {
         var registry = Registry(); var device = new Device(false);
-        Assert.True(HotSyncSession.Run(new(device), registry, _ => { }, () => Assert.Fail("abort"), "User", schedule: []));
+        Assert.True(HotSyncSession.Run(new(device), registry, _ => { }, () => Assert.Fail("abort"), "User", schedulePath: Path.Combine(root, "schedule.json")));
         int write = device.Requests.FindIndex(r => r[0] == 0x11);
         Assert.True(write < device.Requests.FindIndex(r => r[0] == 0x2e));
         Assert.Equal(300u, BinaryPrimitives.ReadUInt32BigEndian(device.Requests[write].AsSpan(4)));
@@ -63,7 +63,7 @@ public sealed partial class HotSyncSessionTests
         var previous = new DateTime(2026, 10, 1, 8, 0, 0);
         var device = new Device { SuccessfulSync = previous, LastSync = new DateTime(2026, 10, 2, 9, 0, 0) };
         var before = DateTime.Now; before = before.AddTicks(-(before.Ticks % TimeSpan.TicksPerSecond));
-        Assert.True(HotSyncSession.Run(new(device), Registry(), _ => { }, () => Assert.Fail("abort"), schedule: []));
+        Assert.True(HotSyncSession.Run(new(device), Registry(), _ => { }, () => Assert.Fail("abort"), schedulePath: Path.Combine(root, "schedule.json")));
         var after = DateTime.Now;
         var write = device.Requests.Last(r => r[0] == 0x11); Assert.Equal(0x20, write[24] & 0x20);
         var date = write.AsSpan(16, 8);
@@ -76,7 +76,7 @@ public sealed partial class HotSyncSessionTests
     public void MissingAccountDataEndsWithoutDeviceWrites(bool missingFile)
     {
         var registry = new FakePalmRegistry { DataPath = missingFile ? root : null }; var device = new Device(); var lines = new List<string>();
-        Assert.False(HotSyncSession.Run(new(device), registry, lines.Add, () => Assert.Fail("abort"), schedule: []));
+        Assert.False(HotSyncSession.Run(new(device), registry, lines.Add, () => Assert.Fail("abort"), schedulePath: Path.Combine(root, "schedule.json")));
         Assert.Contains(lines, l => l.Contains(missingFile ? "users.dat がありません" : "Core\\Path が設定されていません"));
         Assert.DoesNotContain(device.Requests, r => r[0] == 0x11); Assert.Equal(0x2f, device.Requests[^1][0]);
         Assert.Single(lines, l => l.Contains("DLP 要求"));

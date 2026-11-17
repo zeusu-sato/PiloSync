@@ -2,7 +2,7 @@ namespace PiloSync.Cli;
 public enum CommandKind { Tray, Help, Command, Unknown }
 public sealed record RestoreOptions(string AccountName, bool DryRun, bool SerialOnly, bool UsbOnly, string[]? Ports, int Baud, int UsbRead, string? LogPath, bool Trace);
 public sealed record TidyBackupOptions(string AccountName, bool DryRun, string? LogPath = null);
-public sealed record ScheduleOptions(string Action, int[] Minutes);
+public sealed record ScheduleOptions(string Action, int[] Minutes, PiloSync.Core.ScheduleTime[]? Rows = null, string? Name = null);
 public static class CommandLine
 {
     public static CommandKind Classify(string[] args) => args.FirstOrDefault() switch
@@ -34,14 +34,27 @@ public static class CommandLine
         if (args.Length == 0 || args[0] != "schedule") throw new ArgumentException("schedule が必要です");
         if (args.Length == 1) return new("list", []);
         if (args[1] == "clear" && args.Length == 2) return new("clear", []);
-        if (args[1] != "set") throw new ArgumentException($"不明な引数: {args[1]}");
-        var times = args[2..];
-        if (times.Length == 0) throw new ArgumentException("時刻を指定してください");
-        if (times.Length > PiloSync.Core.HotSyncSchedule.MaxTimes) throw new ArgumentException($"時刻は {PiloSync.Core.HotSyncSchedule.MaxTimes} 個までです");
-        var minutes = new int[times.Length];
-        for (int i = 0; i < times.Length; i++)
-            if (!PiloSync.Core.HotSyncSchedule.TryParse(times[i], out minutes[i])) throw new ArgumentException($"時刻を解釈できません: {times[i]}");
-        return new("set", minutes);
+        if (args[1] is "on" or "off" && args.Length == 3 && !string.IsNullOrWhiteSpace(args[2])) return new(args[1], [], Name: args[2]);
+        if (args[1] != "set" || args.Length < 3) throw new ArgumentException("時刻またはアカウント名を指定してください");
+        string[] names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+        var rows = new List<PiloSync.Core.ScheduleTime>();
+        foreach (string arg in args[2..])
+        {
+            var parts = arg.Split('@');
+            if (parts.Length > 2 || !PiloSync.Core.HotSyncSchedule.TryParse(parts[0], out int minute)) throw new ArgumentException($"時刻を解釈できません: {arg}");
+            var days = new HashSet<DayOfWeek>();
+            if (parts.Length == 1) days.UnionWith(Enum.GetValues<DayOfWeek>());
+            else foreach (string part in parts[1].Split(','))
+            {
+                string[] range = part.Split('-');
+                int start = Array.IndexOf(names, range[0]); int end = range.Length == 2 ? Array.IndexOf(names, range[1]) : start;
+                if (range.Length > 2 || start < 0 || end < start) throw new ArgumentException($"曜日を解釈できません: {arg}");
+                for (int i = start; i <= end; i++) days.Add((DayOfWeek)((i + 1) % 7));
+            }
+            rows.Add(new(minute, days.ToArray()));
+        }
+        if (Enum.GetValues<DayOfWeek>().Any(d => rows.Where(r => r.Days.Contains(d)).Select(r => r.Minutes).Distinct().Count() > PiloSync.Core.HotSyncSchedule.MaxTimes)) throw new ArgumentException("1 日の時刻は 8 個までです");
+        return new("set", rows.Select(r => r.Minutes).ToArray(), rows.ToArray());
     }
     public static RestoreOptions ParseRestore(string[] args)
     {
@@ -90,5 +103,5 @@ public static class CommandLine
         if (!new[] { 9600, 19200, 38400, 57600, 115200 }.Contains(baud)) throw new ArgumentException("baud は 9600,19200,38400,57600,115200 のいずれかです");
         return (baud, usbRead);
     }
-    public static void Usage(TextWriter output) => output.WriteLine("pilosync-cli.exe --version\n  serial-diag [COM3 ...] [--out <path>]\n  migrate [--dry-run] [--to <dir>] | migrate --undo [--dry-run]\n  list\n  listen [--serial-only|--usb-only] [--ports COM3,COM4] [--baud 115200] [--once] [--assign <name>] [--log <path>] [--trace] [--usb-read <bytes>]\n  restore <アカウント名> [--serial-only|--usb-only] [--ports COM3,COM4] [--baud 115200] [--log <path>] [--dry-run] [--usb-read <bytes>] [--trace]\n  tidy-backup <アカウント名> [--dry-run] [--log <path>]\n  schedule | schedule set <時刻...> | schedule clear\n  tray [--baud 115200] [--usb-read <bytes>] [--install <files...>]\n  install-startup [--dry-run] | uninstall-startup [--dry-run]");
+    public static void Usage(TextWriter output) => output.WriteLine("pilosync-cli.exe --version\n  serial-diag [COM3 ...] [--out <path>]\n  migrate [--dry-run] [--to <dir>] | migrate --undo [--dry-run]\n  list\n  listen [--serial-only|--usb-only] [--ports COM3,COM4] [--baud 115200] [--once] [--assign <name>] [--log <path>] [--trace] [--usb-read <bytes>]\n  restore <アカウント名> [--serial-only|--usb-only] [--ports COM3,COM4] [--baud 115200] [--log <path>] [--dry-run] [--usb-read <bytes>] [--trace]\n  tidy-backup <アカウント名> [--dry-run] [--log <path>]\n  schedule | schedule set <時刻>[@曜日]… | schedule clear | schedule on|off <アカウント名>\n  tray [--baud 115200] [--usb-read <bytes>] [--install <files...>]\n  install-startup [--dry-run] | uninstall-startup [--dry-run]");
 }

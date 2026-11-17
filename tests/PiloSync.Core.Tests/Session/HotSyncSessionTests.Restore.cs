@@ -17,7 +17,7 @@ public sealed partial class HotSyncSessionTests
         using (var output = File.Create(Path.Combine(backup, "restore.pdb"))) db.Write(output);
         File.WriteAllBytes(Path.Combine(install, "keep.pdb"), [1, 2]); byte[] original = File.ReadAllBytes(Path.Combine(backup, "restore.pdb"));
         var device = new Device(registered) { StorageUnavailable = true }; var lines = new List<string>(); bool? completed = null;
-        Assert.True(HotSyncSession.Run(new(device), registry, lines.Add, () => Assert.Fail("abort"), completed: (ok, _) => completed = ok, restore: new("Target", dryRun), schedule: []));
+        Assert.True(HotSyncSession.Run(new(device), registry, lines.Add, () => Assert.Fail("abort"), completed: (ok, _) => completed = ok, restore: new("Target", dryRun), schedulePath: Path.Combine(root, "schedule.json")));
         Assert.True(completed); Assert.True(File.Exists(Path.Combine(root, "Target", "HotSync.log"))); Assert.True(File.Exists(Path.Combine(install, "keep.pdb")));
         Assert.Equal(original, File.ReadAllBytes(Path.Combine(backup, "restore.pdb"))); Assert.Single(Directory.GetFiles(backup)); Assert.Equal(2, device.Requests.Count(r => r[0] == 0x16));
         Assert.DoesNotContain(device.Requests, r => r[0] is 0x17 or 0x2b or 0x1b or 0x1d); Assert.False(registry.Flags.ContainsKey(301));
@@ -39,7 +39,7 @@ public sealed partial class HotSyncSessionTests
         foreach (string name in new[] { "User", "Missing" })
         {
             var device = new Device(false); bool? completed = null; var lines = new List<string>();
-            Assert.False(HotSyncSession.Run(new(device), registry, lines.Add, () => Assert.Fail("abort"), completed: (ok, _) => completed = ok, restore: new(name), schedule: []));
+            Assert.False(HotSyncSession.Run(new(device), registry, lines.Add, () => Assert.Fail("abort"), completed: (ok, _) => completed = ok, restore: new(name), schedulePath: Path.Combine(root, "schedule.json")));
             Assert.False(completed); Assert.DoesNotContain(device.Requests, r => r[0] is 0x11 or 0x18 or 0x1a or 0x29); Assert.Equal(0x2f, device.Requests[^1][0]);
             Assert.Contains(lines, l => l.Contains(name == "User" ? "空きメモリーが足りません" : "指定したアカウントがありません"));
         }
@@ -56,7 +56,7 @@ public sealed partial class HotSyncSessionTests
         var device = new Device { RestoreError = error, StorageUnavailable = true };
         bool? completed = null; string? message = null; var lines = new List<string>();
         Assert.Equal(expected, HotSyncSession.Run(new(device), registry, lines.Add, () => Assert.Fail("abort"),
-            completed: (ok, reason) => { completed = ok; message = reason; }, restore: new("User"), schedule: []));
+            completed: (ok, reason) => { completed = ok; message = reason; }, restore: new("User"), schedulePath: Path.Combine(root, "schedule.json")));
         Assert.Equal(expected, completed);
         Assert.EndsWith(expected ? "終了（正常・一部書けず）" : "終了（失敗）", lines[^1]);
         if (expected) { Assert.Contains("Net Prefs", message); Assert.Contains("使用中", message); }

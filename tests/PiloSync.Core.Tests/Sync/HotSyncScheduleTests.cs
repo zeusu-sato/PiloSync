@@ -4,6 +4,46 @@ namespace PiloSync.Core.Tests;
 
 public class HotSyncScheduleTests
 {
+    private static void Save(string path, IEnumerable<int> minutes) => HotSyncSchedule.SaveSettings(path, new(minutes.Select(m => new ScheduleTime(m, Enum.GetValues<DayOfWeek>())).ToArray(), []));
+    private static int[] Load(string path) => HotSyncSchedule.LoadSettings(path).Times.Select(t => t.Minutes).ToArray();
+    [Fact]
+    public void UpdateRejectsUnmigratedLegacyWithoutWriting()
+    {
+        using var folder = new Folder(); string path = Path.Combine(folder.Path, "schedule.json");
+        const string original = "{\"times\":[\"1:00\"]}"; File.WriteAllText(path, original);
+        Assert.Throws<InvalidOperationException>(() => HotSyncSchedule.Update(path, current => current));
+        Assert.Equal(original, File.ReadAllText(path)); Assert.Single(Directory.GetFiles(folder.Path));
+    }
+
+
+    [Fact]
+    public void VersionTwoMergesDaysAndPreservesDevicesOnUpdate()
+    {
+        using var folder = new Folder(); string path = Path.Combine(folder.Path, "schedule.json");
+        HotSyncSchedule.SaveSettings(path, new([new(60, [DayOfWeek.Monday]), new(60, [DayOfWeek.Sunday])], [new("A", ScheduleDeviceState.On)]));
+        var loaded = HotSyncSchedule.LoadSettings(path);
+        Assert.Single(loaded.Times); Assert.Equal(2, loaded.Times[0].Days.Count);
+        HotSyncSchedule.Update(path, current => current with { Times = [] });
+        Assert.Equal(ScheduleDeviceState.On, HotSyncSchedule.LoadSettings(path).StateFor("A"));
+    }
+    [Fact]
+    public void LegacyMigratesAndTooManyTimesAreRejected()
+    {
+        using var folder = new Folder(); string path = Path.Combine(folder.Path, "schedule.json");
+        File.WriteAllText(path, "{\"times\":[\"1:00\"]}");
+        var old = HotSyncSchedule.LoadSettings(path); Assert.True(old.Legacy);
+        Assert.Equal(ScheduleDeviceState.Inherit, old.MigrateLegacy(["A"]).StateFor("A"));
+        Assert.Throws<ArgumentException>(() => HotSyncSchedule.SaveSettings(path, new(Enumerable.Range(0, 9).Select(n => new ScheduleTime(n, [DayOfWeek.Monday])).ToArray(), [])));
+        Assert.True(HotSyncSchedule.LoadSettings(path).Legacy);
+    }
+    [Theory]
+    [InlineData("{\"version\":2,\"times\":[{\"time\":\"1:00\",\"days\":[\"bad\"]}],\"devices\":[]}")]
+    [InlineData("{\"version\":2,\"times\":[],\"devices\":[{\"name\":\"A\",\"state\":\"bad\"}]}")]
+    public void UnknownDayOrStateLoadsEmpty(string json)
+    {
+        using var folder = new Folder(); string path = Path.Combine(folder.Path, "schedule.json"); File.WriteAllText(path, json);
+        var settings = HotSyncSchedule.LoadSettings(path); Assert.Empty(settings.Times); Assert.Empty(settings.Devices);
+    }
     [Theory]
     [InlineData(0, "0:00")] [InlineData(60, "1:00")] [InlineData(785, "13:05")] [InlineData(1439, "23:59")]
     public void FormatUsesHourWithoutPadding(int minutes, string text) => Assert.Equal(text, HotSyncSchedule.Format(minutes));
@@ -20,8 +60,8 @@ public class HotSyncScheduleTests
     public void SaveNormalizesAndLoadRoundTrips()
     {
         using var folder = new Folder(); string path = Path.Combine(folder.Path, "nested", "schedule.json");
-        HotSyncSchedule.Save(path, [300, 60, 60, 1260]);
-        Assert.Equal(new[] { 60, 300, 1260 }, HotSyncSchedule.Load(path));
+        Save(path, [300, 60, 60, 1260]);
+        Assert.Equal(new[] { 60, 300, 1260 }, Load(path));
         string json = File.ReadAllText(path); Assert.Contains("\"times\"", json); Assert.Contains("\"1:00\"", json); Assert.Contains("\"21:00\"", json);
         Assert.Single(Directory.GetFiles(Path.GetDirectoryName(path)!));
     }
@@ -29,18 +69,18 @@ public class HotSyncScheduleTests
     public void SaveAcceptsEightTimesAfterRemovingDuplicates()
     {
         using var folder = new Folder(); string path = Path.Combine(folder.Path, "schedule.json");
-        HotSyncSchedule.Save(path, [..Enumerable.Range(0, 8).Select(i => i * 60), 0]);
-        Assert.Equal(HotSyncSchedule.MaxTimes, HotSyncSchedule.Load(path).Count);
+        Save(path, [..Enumerable.Range(0, 8).Select(i => i * 60), 0]);
+        Assert.Equal(HotSyncSchedule.MaxTimes, Load(path).Length);
     }
     [Theory]
     [InlineData(9)] [InlineData(-1)] [InlineData(1440)]
     public void SaveRejectsInvalidAndKeepsExistingFile(int bad)
     {
         using var folder = new Folder(); string path = Path.Combine(folder.Path, "schedule.json");
-        HotSyncSchedule.Save(path, [60]);
+        Save(path, [60]);
         var minutes = bad == 9 ? Enumerable.Range(0, 9).Select(i => i * 60) : new[] { bad };
-        Assert.Throws<ArgumentException>(() => HotSyncSchedule.Save(path, minutes));
-        Assert.Equal(new[] { 60 }, HotSyncSchedule.Load(path)); Assert.Single(Directory.GetFiles(folder.Path));
+        Assert.Throws<ArgumentException>(() => Save(path, minutes));
+        Assert.Equal(new[] { 60 }, Load(path)); Assert.Single(Directory.GetFiles(folder.Path));
     }
     [Theory]
     [InlineData(null)] [InlineData("not json")] [InlineData("")] [InlineData("[]")] [InlineData("{}")] [InlineData("{\"times\":[\"25:00\"]}")]
@@ -49,14 +89,14 @@ public class HotSyncScheduleTests
     {
         using var folder = new Folder(); string path = Path.Combine(folder.Path, "schedule.json");
         if (content is not null) File.WriteAllText(path, content);
-        Assert.Empty(HotSyncSchedule.Load(path));
+        Assert.Empty(Load(path));
     }
     [Fact]
     public void LoadSortsAndRemovesDuplicates()
     {
         using var folder = new Folder(); string path = Path.Combine(folder.Path, "schedule.json");
         File.WriteAllText(path, "{ \"times\": [\"5:00\", \"1:00\", \"0100\"] }");
-        Assert.Equal(new[] { 60, 300 }, HotSyncSchedule.Load(path));
+        Assert.Equal(new[] { 60, 300 }, Load(path));
     }
     [Fact]
     public void DefaultPathIsInAppFolder()
