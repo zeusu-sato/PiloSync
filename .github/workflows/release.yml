@@ -179,7 +179,8 @@ jobs:
             if ((Get-FileHash -LiteralPath (Join-Path $app $name) -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath "artifacts/package/$name" -Algorithm SHA256).Hash) { Fail "Installed $name differs from the package" }
           }
           $uninstallerMatches = $false
-          foreach ($name in 'unins000.exe', 'unins000.dat') {
+          # unins000.dat is the uninstall log written on this runner at install time; it is not shipped, so it is not searched.
+          foreach ($name in 'unins000.exe') {
             $file = Join-Path $app $name
             $bytes = [IO.File]::ReadAllBytes($file)
             if (Search-Bytes $file $bytes -1 $true) { $uninstallerMatches = $true }
