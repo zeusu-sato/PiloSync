@@ -99,6 +99,8 @@ public static partial class TrayHost
             using var pipeStop = new CancellationTokenSource();
             Task pipeWorker = Task.CompletedTask;
             CancellationTokenSource? updateStop = null;
+            CancellationTokenSource? manualUpdateStop = null;
+            var manualScheduler = new UpdateScheduler(new UpdateFetcher());
             Task updateWorker = Task.CompletedTask;
             string? currentTag = UpdateFetcher.CurrentTag;
             using var settingsKey = Registry.CurrentUser.CreateSubKey(@"Software\PiloSync");
@@ -136,7 +138,7 @@ public static partial class TrayHost
                     }));
                 }
                 catch (InvalidOperationException) { completion.TrySetResult(false); }
-                return await completion.Task;
+                return await completion.Task.WaitAsync(token);
             }
             void StartUpdates()
             {
@@ -225,6 +227,21 @@ public static partial class TrayHost
                 var autoUpdate = new ToolStripMenuItem("自動アップデート") { CheckOnClick = true, Checked = updateEnabled, ToolTipText = "GitHub の Releases から新しい版を入れます" };
                 menu.ShowItemToolTips = true;
                 menu.Items.Add(autoUpdate);
+                var manualUpdate = new ToolStripMenuItem("アップデートの確認");
+                menu.Items.Add(manualUpdate);
+                manualUpdate.Click += async (_, _) =>
+                {
+                    manualUpdate.Enabled = false;
+                    using var checkStop = new CancellationTokenSource();
+                    manualUpdateStop = checkStop;
+                    try
+                    {
+                        var result = await Task.Run(() => manualScheduler.CheckNowAsync(currentTag, () => settings.FailedTag, TryInstall, Log, checkStop.Token));
+                        if (result == ManualCheckResult.Latest) Notify("PiloSync", "最新版です");
+                        else if (result == ManualCheckResult.Failed) Notify("PiloSync", "アップデートの確認に失敗しました");
+                    }
+                    finally { manualUpdateStop = null; manualUpdate.Enabled = true; }
+                };
                 autoUpdate.CheckedChanged += (_, _) =>
                 {
                     updateEnabled = autoUpdate.Checked;
@@ -280,7 +297,7 @@ public static partial class TrayHost
                 Application.Run();
             }
             catch (Exception ex) { Crash(ex); result = 1; }
-            finally { updateStop?.Cancel(); pipeStop.Cancel(); try { pipeWorker.GetAwaiter().GetResult(); } catch (Exception ex) { Crash(ex); } installForm?.Close(); activation.Unregister(null); timer.Stop(); stop?.Cancel(); try { worker.GetAwaiter().GetResult(); } catch (Exception ex) { Crash(ex); } stop?.Dispose(); refresh = null; icon = null; dispatcher = null; trayIcon.Visible = false; trayIcon.Icon = null; foreach (var item in frames) item.Dispose(); finished.Set(); }
+            finally { updateStop?.Cancel(); manualUpdateStop?.Cancel(); pipeStop.Cancel(); try { pipeWorker.GetAwaiter().GetResult(); } catch (Exception ex) { Crash(ex); } installForm?.Close(); activation.Unregister(null); timer.Stop(); stop?.Cancel(); try { worker.GetAwaiter().GetResult(); } catch (Exception ex) { Crash(ex); } stop?.Dispose(); refresh = null; icon = null; dispatcher = null; trayIcon.Visible = false; trayIcon.Icon = null; foreach (var item in frames) item.Dispose(); finished.Set(); }
         });
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         bool mutexReleased = WaitHandle.WaitAny([releaseRequest, finished]) == 0;

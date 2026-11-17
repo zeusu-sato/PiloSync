@@ -6,6 +6,8 @@ public sealed class UpdateScheduler(
 {
     private readonly Func<TimeSpan, CancellationToken, Task> delay = delay ?? Task.Delay;
 
+    private int manualChecking;
+
     public async Task RunAsync(string? currentTag, Func<bool> enabled, Func<string?> failedTag,
         Func<StagedUpdate, CancellationToken, Task<bool>> tryInstall, Action<string> log, CancellationToken token)
     {
@@ -13,36 +15,51 @@ public sealed class UpdateScheduler(
         await delay(TimeSpan.FromMinutes(1), token);
         while (!token.IsCancellationRequested && enabled())
         {
-            StagedUpdate? staged = null;
-            bool handedOver = false;
-            try
-            {
-                string? failed = failedTag();
-                string baseline = ReleaseSelection.IsTag(failed) && string.CompareOrdinal(failed, currentTag) > 0 ? failed! : currentTag!;
-                try { staged = await fetcher.FetchAsync(baseline, log, token); }
-                catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
-                catch (Exception ex) { log($"更新の確認: 失敗 {ex.Message}"); }
-                if (staged is not null && string.CompareOrdinal(staged.Tag, baseline) > 0)
-                {
-                    while (!token.IsCancellationRequested && enabled())
-                    {
-                        try
-                        {
-                            if (await tryInstall(staged, token)) { handedOver = true; return; }
-                        }
-                        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
-                        catch (Exception ex) { log($"??更新の確認: 失敗 {ex.Message}"); }
-                        await delay(TimeSpan.FromMinutes(1), token);
-                    }
-                }
-            }
-            finally
-            {
-                if (staged is not null && !handedOver) Cleanup(staged);
-            }
-            if (!enabled()) return;
+            var result = await CheckAsync(currentTag!, enabled, failedTag, tryInstall, log, token);
+            if (result is ManualCheckResult.Installed or ManualCheckResult.Cancelled || !enabled()) return;
             await delay(TimeSpan.FromHours(6), token);
         }
+    }
+
+    public async Task<ManualCheckResult> CheckNowAsync(string? currentTag, Func<string?> failedTag,
+        Func<StagedUpdate, CancellationToken, Task<bool>> tryInstall, Action<string> log, CancellationToken token)
+    {
+        if (Interlocked.CompareExchange(ref manualChecking, 1, 0) != 0) return ManualCheckResult.Busy;
+        try
+        {
+            if (!ReleaseSelection.IsTag(currentTag)) return ManualCheckResult.Failed;
+            return await CheckAsync(currentTag!, () => true, failedTag, tryInstall, log, token);
+        }
+        finally { Interlocked.Exchange(ref manualChecking, 0); }
+    }
+
+    private async Task<ManualCheckResult> CheckAsync(string currentTag, Func<bool> enabled, Func<string?> failedTag,
+        Func<StagedUpdate, CancellationToken, Task<bool>> tryInstall, Action<string> log, CancellationToken token)
+    {
+        StagedUpdate? staged = null;
+        bool handedOver = false;
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            string? failed = failedTag();
+            string baseline = ReleaseSelection.IsTag(failed) && string.CompareOrdinal(failed, currentTag) > 0 ? failed! : currentTag;
+            staged = await fetcher.FetchAsync(baseline, log, token);
+            if (staged is null || string.CompareOrdinal(staged.Tag, baseline) <= 0) return ManualCheckResult.Latest;
+            while (!token.IsCancellationRequested && enabled())
+            {
+                try
+                {
+                    if (await tryInstall(staged, token)) { handedOver = true; return ManualCheckResult.Installed; }
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { return ManualCheckResult.Cancelled; }
+                catch (Exception ex) { log($"更新の確認: 失敗 {ex.Message}"); }
+                await delay(TimeSpan.FromMinutes(1), token);
+            }
+            return ManualCheckResult.Cancelled;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return ManualCheckResult.Cancelled; }
+        catch (Exception ex) { log($"更新の確認: 失敗 {ex.Message}"); return ManualCheckResult.Failed; }
+        finally { if (staged is not null && !handedOver) Cleanup(staged); }
     }
 
     internal static void Cleanup(StagedUpdate staged)
@@ -56,3 +73,5 @@ public sealed class UpdateScheduler(
         }
     }
 }
+
+public enum ManualCheckResult { Latest, Installed, Failed, Busy, Cancelled }
